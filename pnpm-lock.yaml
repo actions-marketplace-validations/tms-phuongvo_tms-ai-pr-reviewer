@@ -15,7 +15,7 @@ importers:
         specifier: ^5.1.1
         version: 5.1.1
       '@dqbd/tiktoken':
-        specifier: ^1.0.7
+        specifier: ^1.0.21
         version: 1.0.21
       '@google/genai':
         specifier: ^0.13.0
