@@ -5,38 +5,40 @@ import crypto from 'crypto'
 import {info, setFailed, warning} from '@actions/core'
 import {IBot, Ids} from './abc'
 
+import Anthropic, {AnthropicError} from '@anthropic-ai/sdk'
 import {
-  GoogleGenAI,
-  GenerateContentResponse,
-  GenerateContentConfig
-} from '@google/genai'
+  Message,
+  MessageCreateParamsNonStreaming
+} from '@anthropic-ai/sdk/resources/messages'
 
 import pRetry from 'p-retry'
-import {Options, GeminiAIOptions} from '../options'
+import {Options, AnthropicAIOptions} from '../options'
 
-export class GeminiAIBot implements IBot {
-  private readonly api: GoogleGenAI | null = null
+export class AnthropicAIBot implements IBot {
+  private readonly api: Anthropic | null = null
   private readonly systemMessage: string | undefined
 
   constructor(
     private readonly options: Options,
-    private readonly geminiOptions: GeminiAIOptions
+    private readonly anthropicOptions: AnthropicAIOptions
   ) {
-    if (process.env.GOOGLE_API_KEY) {
+    this.options = options
+    this.anthropicOptions = anthropicOptions
+    if (process.env.ANTHROPIC_API_KEY) {
       const currentDate = new Date().toISOString().split('T')[0]
       this.systemMessage = `${options.systemMessage} 
-        Knowledge cutoff: ${geminiOptions.tokenLimits.knowledgeCutOff}
+        Knowledge cutoff: ${anthropicOptions.tokenLimits.knowledgeCutOff}
         Current date: ${currentDate}
 
         IMPORTANT: Entire response must be in the language with ISO code: ${options.language}
       `
-      this.api = new GoogleGenAI({
-        apiKey: process.env.GOOGLE_API_KEY
+      this.api = new Anthropic({
+        apiKey: process.env.ANTHROPIC_API_KEY
       })
     } else {
       const err =
-        "Unable to initialize the Gemini API, both 'GOOGLE_API_KEY' environment variable are not available"
-      throw new Error(err)
+        "Unable to initialize the OpenAI API, both 'ANTHROPIC_API_KEY' environment variable are not available"
+      throw new AnthropicError(err)
     }
   }
 
@@ -60,56 +62,57 @@ export class GeminiAIBot implements IBot {
       return ['', {}]
     }
 
-    let response: GenerateContentResponse | undefined
+    let response: Message | undefined
 
     if (this.api != null) {
-      const config: GenerateContentConfig = {
-        systemInstruction: this.systemMessage,
+      const config: MessageCreateParamsNonStreaming = {
+        model: this.anthropicOptions.model,
+        messages: [
+          {
+            role: 'user',
+            content: message
+          }
+        ],
+        system: this.systemMessage,
         temperature: this.options.modelTemperature,
-        maxOutputTokens: this.geminiOptions.tokenLimits.maxTokens
+        // eslint-disable-next-line camelcase
+        max_tokens: this.anthropicOptions.tokenLimits.maxTokens
       }
 
       try {
-        response = await pRetry(
-          () =>
-            this.api!.models.generateContent({
-              model: this.geminiOptions.model,
-              contents: message,
-              config
-            }),
-          {
-            retries: this.options.retries
-          }
-        )
+        response = await pRetry(() => this.api!.messages.create(config), {
+          retries: this.options.retries
+        })
       } catch (e: unknown) {
-        if (e instanceof Error) {
+        if (e instanceof AnthropicError) {
           info(
-            `response: ${response}, failed to send message to gemini: ${e}, backtrace: ${e.stack}`
+            `response: ${response}, failed to send message to anthropic: ${e}, backtrace: ${e.stack}`
           )
         }
       }
       const end = Date.now()
       info(`response: ${JSON.stringify(response)}`)
       info(
-        `Gemini sendMessage (including retries) response time: ${
+        `anthropic sendMessage (including retries) response time: ${
           end - start
         } ms`
       )
     } else {
-      setFailed('The Gemini API is not initialized')
+      setFailed('The Anthropic API is not initialized')
     }
     let responseText = ''
     if (response != null) {
-      responseText = response.text || ''
+      responseText =
+        response.content[0].type === 'text' ? response.content[0].text : ''
     } else {
-      warning('Gemini response is null')
+      warning('anthropic response is null')
     }
     // remove the prefix "with " in the response
     if (responseText.startsWith('with ')) {
       responseText = responseText.substring(5)
     }
     if (this.options.debug) {
-      info(`Gemini responses: ${responseText}`)
+      info(`anthropic responses: ${responseText}`)
     }
     const parentMessageId = crypto
       .createHash('md5')
@@ -117,7 +120,7 @@ export class GeminiAIBot implements IBot {
       .digest('hex')
     const newIds: Ids = {
       parentMessageId,
-      conversationId: response?.responseId
+      conversationId: response?.id
     }
     return [responseText, newIds]
   }
